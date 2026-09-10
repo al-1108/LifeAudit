@@ -39,7 +39,7 @@ class LifeAudit(QWidget):
             "work",
             "productivity",
             "social",
-            "goon"
+            "not being productive"
         ])
         layout.addWidget(self.category_dropdown)
 
