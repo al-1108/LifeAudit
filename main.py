@@ -83,6 +83,8 @@ class LifeAudit(QWidget):
 
         with open("data/activities.json", "w") as f:
             json.dump(activities, f, indent=4)
+
+        self.activity_input.clear()
             
 
 
