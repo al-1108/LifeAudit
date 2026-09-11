@@ -7,22 +7,59 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QFrame,
     QLabel,
     QLineEdit,
     QComboBox,
+    QListView,
+    QStyleFactory,
     QPushButton,
-    QScrollArea
+    QScrollArea,
+    QSizePolicy
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QPointF
+from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
+
+
+class CategoryComboBox(QComboBox):
+    """Draw a clear chevron without relying on the platform's dropdown icon."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#6551ac"), 2, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        x, y = self.width() - 18, self.height() / 2
+        painter.drawPolyline(QPolygonF([
+            QPointF(x - 5, y - 2), QPointF(x, y + 3), QPointF(x + 5, y - 2)
+        ]))
+        painter.end()
 
 
 class ActivityCard(QWidget):
     """One timeline entry, showing the activity's duration within this day."""
 
-    def __init__(self, activity, day_start, day_end, now, parent=None):
+    CATEGORY_COLORS = {
+        "rest": "#5b8fc9",
+        "study": "#8270cf",
+        "work": "#b88b35",
+        "productivity": "#419879",
+        "social": "#ba6aa0",
+        "not being productive": "#cb7467",
+        "eat": "#ce934f",
+        "hygiene": "#459fa8",
+        "void": "#9295a3",
+    }
+
+    def __init__(self, activity, day_start, day_end, now, parent=None,
+                 *, is_first=False, is_last=False):
         super().__init__(parent)
         self.activity = activity
+        self.is_first = is_first
+        self.is_last = is_last
+        self.dot_color = QColor(self.CATEGORY_COLORS.get(activity["category"], "#9295a3"))
         self.start = datetime.fromisoformat(activity["start"])
         self.end = (
             datetime.fromisoformat(activity["end"])
@@ -31,40 +68,35 @@ class ActivityCard(QWidget):
         self.day_start = day_start
         self.day_end = day_end
         self.setObjectName("ActivityCard")
+        self.setProperty("running", self.end is None)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("""
-            QWidget#ActivityCard { background: #ffffff; border-radius: 10px; }
+            QWidget#ActivityCard { background: #ffffff; border: none; border-radius: 0; }
+            QWidget#ActivityCard[running="true"] { background: #f3f1ff; }
             QWidget#ActivityCard QLabel { background: transparent; border: none; }
-            QLabel#timelineTime { color: #64748b; font-size: 12px; }
-            QLabel#timelineDot { color: #6366f1; font-size: 16px; }
-            QFrame#timelineLine { background: #e2e8f0; border: none; }
-            QLabel#activityName { color: #0f172a; font-size: 14px; font-weight: 600; }
-            QLabel#activityDetails { color: #64748b; font-size: 12px; }
+            QLabel#timelineTime { color: #77768a; font-size: 12px; padding-top: 19px; }
+            QLabel#activityName { color: #29263c; font-size: 14px; font-weight: 600; }
+            QLabel#activityDetails { color: #77768a; font-size: 12px; }
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 0)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setSpacing(14)
 
         time_label = QLabel(self.start.strftime("%I:%M %p"))
         time_label.setObjectName("timelineTime")
+        time_label.setFixedWidth(76)
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop)
 
-        rail = QVBoxLayout()
-        rail.setSpacing(4)
-        dot = QLabel("●")
-        dot.setObjectName("timelineDot")
-        rail.addWidget(dot, 0, Qt.AlignmentFlag.AlignHCenter)
-        line = QFrame()
-        line.setObjectName("timelineLine")
-        line.setFixedWidth(2)
-        line.setMinimumHeight(26)
-        rail.addWidget(line, 1, Qt.AlignmentFlag.AlignHCenter)
-        layout.addLayout(rail)
+        # Reserve a full-height rail so adjacent entries connect without gaps.
+        self.rail = QWidget()
+        self.rail.setFixedWidth(12)
+        layout.addWidget(self.rail)
 
         content = QVBoxLayout()
-        content.setSpacing(4)
-        content.setContentsMargins(0, 0, 0, 14)
+        content.setSpacing(6)
+        content.setContentsMargins(0, 16, 0, 18)
         name = QLabel(activity["activity"])
         name.setTextFormat(Qt.TextFormat.PlainText)
         name.setObjectName("activityName")
@@ -78,6 +110,22 @@ class ActivityCard(QWidget):
         content.addStretch()
         layout.addLayout(content, 1)
         self.update_duration(now)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        x = self.rail.geometry().x() + self.rail.width() / 2
+        dot_y = 25
+        painter.setPen(QPen(QColor("#e0dcec"), 2))
+        painter.drawLine(
+            QPointF(x, dot_y if self.is_first else 0),
+            QPointF(x, dot_y if self.is_last else self.height()),
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.dot_color)
+        painter.drawEllipse(QPointF(x, dot_y), 7, 7)
+        painter.end()
 
     def update_duration(self, now):
         # Only count the part of this activity inside the displayed day.
@@ -97,35 +145,130 @@ class LifeAudit(QWidget):
         super().__init__()
 
         self.start_time = None
-        self.task_label = QLabel("Currently: ---")
+        self.task_label = QLabel("Ready when you are")
+        self.task_label.setObjectName("currentActivity")
+        self.task_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.task_label.setWordWrap(True)
 
         if os.path.exists("data/activities.json"):
             with open("data/activities.json", "r") as f:
                 data = json.load(f)
             if data:
                 self.start_time = datetime.fromisoformat(data[-1]["start"])
-                self.task_label.setText(f"Currently: {data[-1]['activity']}")
+                self.task_label.setText(data[-1]['activity'])
                 self.setWindowTitle(f"Currently: {data[-1]['activity']}")
             else:
                 self.setWindowTitle("LifeAudit")
         else:
             self.setWindowTitle("LifeAudit")
         
-        self.resize(500, 650)
+        self.resize(1040, 600)
+        self.setMinimumSize(900, 560)
+        self.setObjectName("LifeAudit")
+        self.setStyleSheet("""
+            QWidget { color: #29263c; font-size: 13px; }
+            QWidget#LifeAudit { background: #f7f7fb; }
+            QWidget#timelineContent { background: #ffffff; }
+            QLabel { background: transparent; }
+            QLabel#brand { font-size: 26px; font-weight: 700; }
+            QLabel#subtitle, QLabel#dateLabel, QLabel#timelineCount { color: #77768a; }
+            QLabel#sectionTitle { font-size: 15px; font-weight: 600; }
+            QLabel#fieldLabel { color: #77768a; font-size: 12px; }
+            QFrame#composer { background: #ffffff; border: 1px solid #e9e9f0; border-radius: 4px; }
+            QFrame#currentPanel { background: #eeebfa; border: 1px solid #e0daf3; border-radius: 4px; }
+            QLabel#eyebrow { color: #74678f; font-size: 11px; font-weight: 600; letter-spacing: 1px; }
+            QLabel#currentActivity { font-size: 20px; font-weight: 600; }
+            QLabel#elapsedTime { font-size: 34px; font-weight: 600; letter-spacing: 1px; }
+            QLabel#startTime { color: #74678f; font-size: 12px; }
+            QLabel#statusBadge { color: #366a59; background: #deeee6; border-radius: 4px; padding: 4px 10px; font-size: 11px; }
+            QLineEdit, QComboBox {
+                background: #fafafd; border: 1px solid #dfdfe9;
+                border-radius: 9px; padding: 11px 12px; selection-background-color: #7460bd;
+            }
+            QLineEdit:focus, QComboBox:focus { border: 1px solid #8270cf; background: #ffffff; }
+            QComboBox { padding-right: 42px; }
+            QComboBox:hover { border-color: #b6a7e4; }
+            QComboBox::drop-down {
+                subcontrol-origin: padding; subcontrol-position: top right; width: 34px;
+                background: #eeebfa; border-left: 1px solid #dfdfe9;
+                border-top-right-radius: 8px; border-bottom-right-radius: 8px;
+            }
+            QComboBox::down-arrow { image: none; }
+            QComboBox QAbstractItemView {
+                background: #ffffff; color: #29263c; border: 1px solid #dfdfe9;
+                selection-background-color: #eeebfa; selection-color: #514080;
+                padding: 4px; outline: none;
+            }
+            QComboBox QAbstractItemView::item { min-height: 28px; padding: 4px 10px; }
+            QPushButton {
+                background: #7460bd; color: #ffffff; border: none; border-radius: 9px;
+                padding: 12px 20px; font-weight: 600;
+            }
+            QPushButton:hover { background: #6551ac; }
+            QPushButton:pressed { background: #564297; }
+            QPushButton:focus { border: 2px solid #b6a7e4; padding: 10px 18px; }
+            QScrollArea { background: transparent; border: none; }
+            QScrollArea#timelineScroll {
+                background: #ffffff; border: 1px solid #e0dcec;
+                border-radius: 4px; padding: 2px;
+            }
+            QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
+            QScrollBar::handle:vertical { background: #d7d3e4; border-radius: 4px; min-height: 32px; }
+            QScrollBar::handle:vertical:hover { background: #b9b1cd; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+            QLabel#emptyTimeline { color: #77768a; padding: 28px; background: #ffffff; border: 1px solid #e9e9f0; border-radius: 12px; }
+        """)
 
-        layout = QVBoxLayout()
+        layout = QGridLayout(self)
+        layout.setContentsMargins(28, 26, 28, 24)
+        layout.setHorizontalSpacing(24)
+        layout.setVerticalSpacing(14)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 1)
+        layout.setRowStretch(2, 1)
 
-        title = QLabel("What are you doing?")
-        layout.addWidget(title)
+        title = QLabel("LifeAudit")
+        title.setObjectName("brand")
+        subtitle = QLabel("A little more intention, every day.")
+        subtitle.setObjectName("subtitle")
+        layout.addWidget(title, 0, 0)
+        layout.addWidget(subtitle, 1, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.date_label = QLabel()
+        self.date_label.setObjectName("dateLabel")
+        self.date_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(self.date_label, 0, 1)
+
+        controls_column = QVBoxLayout()
+        controls_column.setSpacing(20)
+        layout.addLayout(controls_column, 2, 0)
+
+        composer = QFrame()
+        composer.setObjectName("composer")
+        form = QVBoxLayout(composer)
+        form.setContentsMargins(20, 18, 20, 20)
+        form.setSpacing(10)
+        form_title = QLabel("What are you doing?")
+        form_title.setObjectName("sectionTitle")
+        form.addWidget(form_title)
 
         self.activity_input = QLineEdit()
         self.activity_input.setPlaceholderText("e.g. Doing calculus")
-        layout.addWidget(self.activity_input)
+        self.activity_input.setClearButtonEnabled(True)
+        self.activity_input.returnPressed.connect(self.start_activity)
+        form.addWidget(self.activity_input)
 
         category_label = QLabel("Category")
-        layout.addWidget(category_label)
+        category_label.setObjectName("fieldLabel")
+        form.addWidget(category_label)
 
-        self.category_dropdown = QComboBox()
+        self.category_dropdown = CategoryComboBox()
+        # Use the same popup presentation on every platform.
+        self.category_style = QStyleFactory.create("Fusion")
+        self.category_style.setParent(self.category_dropdown)
+        self.category_dropdown.setStyle(self.category_style)
+        self.category_dropdown.setView(QListView())
+        self.category_dropdown.setCursor(Qt.CursorShape.PointingHandCursor)
         self.category_dropdown.addItems([
             "rest",
             "study",
@@ -134,48 +277,72 @@ class LifeAudit(QWidget):
             "social",
             "not being productive",
             "eat",
-            "hygiene"
+            "hygiene",
             "void"
             # void --> not tracked
         ])
-        layout.addWidget(self.category_dropdown)
+        actions = QHBoxLayout()
+        actions.setSpacing(12)
+        actions.addWidget(self.category_dropdown, 1)
 
         self.start_button = QPushButton("Start Activity")
         self.start_button.clicked.connect(self.start_activity)
-        layout.addWidget(self.start_button)
+        self.start_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        actions.addWidget(self.start_button)
+        form.addLayout(actions)
+        controls_column.addWidget(composer)
 
-        self.start_label = QLabel("Time started: ---")
-        self.elapsed_label = QLabel("Time elapsed: ---")
+        current_panel = QFrame()
+        current_panel.setObjectName("currentPanel")
+        current_layout = QVBoxLayout(current_panel)
+        current_layout.setContentsMargins(22, 18, 22, 20)
+        current_layout.setSpacing(10)
+        current_header = QHBoxLayout()
+        current_heading = QLabel("CURRENT ACTIVITY")
+        current_heading.setObjectName("eyebrow")
+        current_header.addWidget(current_heading, 1)
+        self.status_badge = QLabel()
+        self.status_badge.setObjectName("statusBadge")
+        current_header.addWidget(self.status_badge)
+        current_layout.addLayout(current_header)
+        current_layout.addWidget(self.task_label)
+        self.elapsed_label = QLabel()
+        self.elapsed_label.setObjectName("elapsedTime")
+        self.start_label = QLabel()
+        self.start_label.setObjectName("startTime")
+        current_layout.addWidget(self.elapsed_label)
+        current_layout.addWidget(self.start_label)
+        controls_column.addWidget(current_panel)
+        controls_column.addStretch()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_time)
         self.timer.start(1000)
 
-        layout.addWidget(self.task_label)
-        layout.addWidget(self.start_label)
-        layout.addWidget(self.elapsed_label)
-
+        timeline_header = QHBoxLayout()
         timeline_title = QLabel("Today's timeline")
-        timeline_title.setStyleSheet("font-size: 16px; font-weight: 600; margin-top: 16px;")
-        layout.addWidget(timeline_title)
+        timeline_title.setObjectName("sectionTitle")
+        timeline_header.addWidget(timeline_title, 1)
+        self.timeline_count = QLabel()
+        self.timeline_count.setObjectName("timelineCount")
+        timeline_header.addWidget(self.timeline_count)
+        layout.addLayout(timeline_header, 1, 1)
 
         self.timeline_scroll = QScrollArea()
+        self.timeline_scroll.setObjectName("timelineScroll")
         self.timeline_scroll.setWidgetResizable(True)
         self.timeline_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.timeline_scroll.setMinimumHeight(180)
         timeline_content = QWidget()
         timeline_content.setObjectName("timelineContent")
-        timeline_content.setStyleSheet("QWidget#timelineContent { background: #f1f5f9; }")
         self.timeline_layout = QVBoxLayout(timeline_content)
-        self.timeline_layout.setContentsMargins(8, 8, 8, 8)
-        self.timeline_layout.setSpacing(6)
+        self.timeline_layout.setContentsMargins(0, 0, 0, 0)
+        self.timeline_layout.setSpacing(0)
         self.timeline_scroll.setWidget(timeline_content)
-        layout.addWidget(self.timeline_scroll, 1)
+        layout.addWidget(self.timeline_scroll, 2, 1)
 
         self.load_timeline()
         self.update_time()
-
-        self.setLayout(layout)
 
     def start_activity(self):
         activity = self.activity_input.text().strip()
@@ -185,7 +352,7 @@ class LifeAudit(QWidget):
         category = self.category_dropdown.currentText()
 
         self.start_time = datetime.now()
-        self.task_label.setText(f"Currently: {activity}")
+        self.task_label.setText(activity)
         self.setWindowTitle(f"Currently: {activity}")
 
         timestamp = self.start_time.isoformat()
@@ -219,6 +386,7 @@ class LifeAudit(QWidget):
     def load_timeline(self):
         now = datetime.now()
         self.timeline_date = now.date()
+        self.date_label.setText(now.strftime("%A\n%b %d, %Y"))
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
 
@@ -248,15 +416,20 @@ class LifeAudit(QWidget):
                 today_activities.append((start, activity))
 
         today_activities.sort(key=lambda entry: entry[0])
-        for _, activity in today_activities:
-            card = ActivityCard(activity, day_start, day_end, now)
+        count = len(today_activities)
+        self.timeline_count.setText(f"{count} {'activity' if count == 1 else 'activities'}")
+        for index, (_, activity) in enumerate(today_activities):
+            card = ActivityCard(activity, day_start, day_end, now,
+                                is_first=index == 0, is_last=index == count - 1)
             self.timeline_layout.addWidget(card)
             if card.end is None:
                 self.running_cards.append(card)
 
         if not today_activities:
-            empty_label = QLabel("No activities today yet.")
-            empty_label.setStyleSheet("color: #64748b; padding: 12px;")
+            empty_label = QLabel("Your day starts here.\nStart an activity to build your timeline.")
+            empty_label.setObjectName("emptyTimeline")
+            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_label.setWordWrap(True)
             self.timeline_layout.addWidget(empty_label)
         self.timeline_layout.addStretch()
 
@@ -268,7 +441,8 @@ class LifeAudit(QWidget):
             card.update_duration(now)
 
         if self.start_time:
-            self.start_label.setText(f"Time started: {self.start_time.strftime('%H:%M:%S')}")
+            self.status_badge.setText("●  In progress")
+            self.start_label.setText(f"Started at {self.start_time.strftime('%I:%M %p')} · elapsed time")
 
             elapsed = now - self.start_time
 
@@ -279,11 +453,12 @@ class LifeAudit(QWidget):
             seconds = total_seconds % 60
 
             self.elapsed_label.setText(
-                f"Time elapsed: {hours:02}:{minutes:02}:{seconds:02}"
+                f"{hours:02}:{minutes:02}:{seconds:02}"
             )
         else:
-            self.start_label.setText("Time started: ---")
-            self.elapsed_label.setText("Time elapsed: ---")
+            self.status_badge.setText("Not started")
+            self.start_label.setText("Start an activity when you're ready.")
+            self.elapsed_label.setText("00:00:00")
 
 
 if __name__ == "__main__":
