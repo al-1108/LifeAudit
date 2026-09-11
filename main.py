@@ -57,6 +57,7 @@ class ActivityCard(QWidget):
                  *, is_first=False, is_last=False):
         super().__init__(parent)
         self.activity = activity
+        # First/last refer to each continuous stretch of tracked time.
         self.is_first = is_first
         self.is_last = is_last
         self.dot_color = QColor(self.CATEGORY_COLORS.get(activity["category"], "#9295a3"))
@@ -145,24 +146,27 @@ class LifeAudit(QWidget):
         super().__init__()
 
         self.start_time = None
+        self.on_void = False
         current_category = None
         self.task_label = QLabel("Ready when you are")
         self.task_label.setObjectName("currentActivity")
         self.task_label.setTextFormat(Qt.TextFormat.PlainText)
         self.task_label.setWordWrap(True)
+        self.setWindowTitle("LifeAudit")
 
         if os.path.exists("data/activities.json"):
             with open("data/activities.json", "r") as f:
                 data = json.load(f)
-            if data:
+            self.on_void = bool(
+                data and data[-1]["end"] is None and data[-1]["category"] == "void"
+            )
+            if data and data[-1]["end"] is None and data[-1]["category"] != "void":
                 current_category = data[-1]["category"]
                 self.start_time = datetime.fromisoformat(data[-1]["start"])
                 self.task_label.setText(data[-1]['activity'])
                 self.setWindowTitle(f"Currently: {data[-1]['activity']}")
-            else:
-                self.setWindowTitle("LifeAudit")
-        else:
-            self.setWindowTitle("LifeAudit")
+            elif data:
+                self.task_label.setText("Tracking paused")
         
         self.resize(1040, 600)
         self.setMinimumSize(900, 560)
@@ -188,6 +192,7 @@ class LifeAudit(QWidget):
                 border-radius: 9px; padding: 11px 12px; selection-background-color: #7460bd;
             }
             QLineEdit:focus, QComboBox:focus { border: 1px solid #8270cf; background: #ffffff; }
+            QLineEdit:disabled { background: #f0f0f5; color: #9295a3; border-color: #e5e5ed; }
             QComboBox { padding-right: 42px; }
             QComboBox:hover { border-color: #b6a7e4; }
             QComboBox::drop-down {
@@ -209,6 +214,7 @@ class LifeAudit(QWidget):
             QPushButton:hover { background: #6551ac; }
             QPushButton:pressed { background: #564297; }
             QPushButton:focus { border: 2px solid #b6a7e4; padding: 10px 18px; }
+            QPushButton:disabled { background: #e5e1ef; color: #9890ac; }
             QScrollArea { background: transparent; border: none; }
             QScrollArea#timelineScroll {
                 background: #ffffff; border: 1px solid #e0dcec;
@@ -283,6 +289,7 @@ class LifeAudit(QWidget):
             "void"
             # void --> not tracked
         ])
+        self.category_dropdown.currentTextChanged.connect(self.update_activity_input)
         actions = QHBoxLayout()
         actions.setSpacing(12)
         actions.addWidget(self.category_dropdown, 1)
@@ -348,46 +355,65 @@ class LifeAudit(QWidget):
         self.timeline_scroll.setWidget(timeline_content)
         layout.addWidget(self.timeline_scroll, 2, 1)
 
+        if self.on_void:
+            self.category_dropdown.setCurrentText("void")
         self.load_timeline()
         self.update_time()
 
+    def update_activity_input(self, category):
+        is_void = category == "void"
+        self.activity_input.setEnabled(not is_void)
+        self.start_button.setEnabled(not (is_void and self.on_void))
+        self.activity_input.setPlaceholderText(
+            "Untracked time" if is_void else "e.g. Doing calculus"
+        )
+        if is_void:
+            self.activity_input.clear()
+
     def start_activity(self):
         activity = self.activity_input.text().strip()
-        if not activity:
+        category = self.category_dropdown.currentText()
+        if category == "void" and self.on_void:
+            return
+        if not activity and category != "void":
             return
 
-        category = self.category_dropdown.currentText()
-        self.current_heading.setText(f"CURRENT ACTIVITY · {category}")
+        now = datetime.now()
+        timestamp = now.isoformat()
+        activities = []
+        if os.path.exists("data/activities.json"):
+            with open("data/activities.json", "r") as f:
+                activities = json.load(f)
 
-        self.start_time = datetime.now()
-        self.task_label.setText(f"{activity}")
-        self.setWindowTitle(f"Currently: {activity}")
+        # Close only a running activity, preserving any untracked gap.
+        if activities and activities[-1]["end"] is None:
+            activities[-1]["end"] = timestamp
 
-        timestamp = self.start_time.isoformat()
-
-        data = {
-            "activity": activity,
+        activities.append({
+            "activity": "" if category == "void" else activity,
             "category": category,
             "start": timestamp,
             "end": None
-        }
+        })
 
-        if not os.path.exists("data/activities.json"):
-            os.makedirs("data", exist_ok=True)
-            with open("data/activities.json", "w") as f:
-                json.dump([], f)
-
-        with open("data/activities.json", "r") as f:
-            activities = json.load(f)
-
-        activities.append(data)
-        if len(activities) > 1:
-            activities[-2]["end"] = timestamp
-
+        os.makedirs("data", exist_ok=True)
         with open("data/activities.json", "w") as f:
             json.dump(activities, f, indent=4)
 
+        self.on_void = category == "void"
+        if category == "void":
+            self.start_time = None
+            self.current_heading.setText("CURRENT ACTIVITY")
+            self.task_label.setText("Tracking paused")
+            self.setWindowTitle("LifeAudit")
+        else:
+            self.start_time = now
+            self.current_heading.setText(f"CURRENT ACTIVITY · {category}")
+            self.task_label.setText(activity)
+            self.setWindowTitle(f"Currently: {activity}")
+
         self.activity_input.clear()
+        self.update_activity_input(category)
         self.load_timeline()
         self.update_time()
 
@@ -414,6 +440,8 @@ class LifeAudit(QWidget):
 
         today_activities = []
         for activity in activities:
+            if activity["category"] == "void":
+                continue
             start = datetime.fromisoformat(activity["start"])
             end = (
                 datetime.fromisoformat(activity["end"])
@@ -426,9 +454,17 @@ class LifeAudit(QWidget):
         today_activities.sort(key=lambda entry: entry[0])
         count = len(today_activities)
         self.timeline_count.setText(f"{count} {'activity' if count == 1 else 'activities'}")
+        # Void isn't saved, so a gap between end and start marks a line break.
+        breaks = {0, count}
+        for index in range(1, count):
+            previous_end = today_activities[index - 1][1]["end"]
+            start = today_activities[index][0]
+            if previous_end is not None and datetime.fromisoformat(previous_end) < start:
+                breaks.add(index)
+
         for index, (_, activity) in enumerate(today_activities):
             card = ActivityCard(activity, day_start, day_end, now,
-                                is_first=index == 0, is_last=index == count - 1)
+                                is_first=index in breaks, is_last=index + 1 in breaks)
             self.timeline_layout.addWidget(card)
             if card.end is None:
                 self.running_cards.append(card)
@@ -464,7 +500,7 @@ class LifeAudit(QWidget):
                 f"{hours:02}:{minutes:02}:{seconds:02}"
             )
         else:
-            self.status_badge.setText("Not started")
+            self.status_badge.setText("Not tracking")
             self.start_label.setText("Start an activity when you're ready.")
             self.elapsed_label.setText("00:00:00")
 
