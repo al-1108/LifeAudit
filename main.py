@@ -145,6 +145,7 @@ class LifeAudit(QWidget):
         super().__init__()
 
         self.start_time = None
+        current_category = None
         self.task_label = QLabel("Ready when you are")
         self.task_label.setObjectName("currentActivity")
         self.task_label.setTextFormat(Qt.TextFormat.PlainText)
@@ -154,6 +155,7 @@ class LifeAudit(QWidget):
             with open("data/activities.json", "r") as f:
                 data = json.load(f)
             if data:
+                current_category = data[-1]["category"]
                 self.start_time = datetime.fromisoformat(data[-1]["start"])
                 self.task_label.setText(data[-1]['activity'])
                 self.setWindowTitle(f"Currently: {data[-1]['activity']}")
@@ -174,7 +176,7 @@ class LifeAudit(QWidget):
             QLabel#subtitle, QLabel#dateLabel, QLabel#timelineCount { color: #77768a; }
             QLabel#sectionTitle { font-size: 15px; font-weight: 600; }
             QLabel#fieldLabel { color: #77768a; font-size: 12px; }
-            QFrame#composer { background: #ffffff; border: 1px solid #e9e9f0; border-radius: 4px; }
+            QFrame#composer { background: #ffffff; border: 1px solid #e0dcec; border-radius: 4px; }
             QFrame#currentPanel { background: #eeebfa; border: 1px solid #e0daf3; border-radius: 4px; }
             QLabel#eyebrow { color: #74678f; font-size: 11px; font-weight: 600; letter-spacing: 1px; }
             QLabel#currentActivity { font-size: 20px; font-weight: 600; }
@@ -217,7 +219,7 @@ class LifeAudit(QWidget):
             QScrollBar::handle:vertical:hover { background: #b9b1cd; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-            QLabel#emptyTimeline { color: #77768a; padding: 28px; background: #ffffff; border: 1px solid #e9e9f0; border-radius: 12px; }
+            QLabel#emptyTimeline { color: #77768a; padding: 28px; background: transparent; border: none; }
         """)
 
         layout = QGridLayout(self)
@@ -230,7 +232,7 @@ class LifeAudit(QWidget):
 
         title = QLabel("LifeAudit")
         title.setObjectName("brand")
-        subtitle = QLabel("A little more intention, every day.")
+        subtitle = QLabel("accountability engine, no minute left untracked")
         subtitle.setObjectName("subtitle")
         layout.addWidget(title, 0, 0)
         layout.addWidget(subtitle, 1, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -298,9 +300,14 @@ class LifeAudit(QWidget):
         current_layout.setContentsMargins(22, 18, 22, 20)
         current_layout.setSpacing(10)
         current_header = QHBoxLayout()
-        current_heading = QLabel("CURRENT ACTIVITY")
-        current_heading.setObjectName("eyebrow")
-        current_header.addWidget(current_heading, 1)
+        self.current_heading = QLabel(
+            f"CURRENT ACTIVITY · {current_category}"
+            if current_category else "CURRENT ACTIVITY"
+        )
+        self.current_heading.setObjectName("eyebrow")
+        self.current_heading.setTextFormat(Qt.TextFormat.PlainText)
+        self.current_heading.setWordWrap(True)
+        current_header.addWidget(self.current_heading, 1)
         self.status_badge = QLabel()
         self.status_badge.setObjectName("statusBadge")
         current_header.addWidget(self.status_badge)
@@ -350,9 +357,10 @@ class LifeAudit(QWidget):
             return
 
         category = self.category_dropdown.currentText()
+        self.current_heading.setText(f"CURRENT ACTIVITY · {category}")
 
         self.start_time = datetime.now()
-        self.task_label.setText(activity)
+        self.task_label.setText(f"{activity}")
         self.setWindowTitle(f"Currently: {activity}")
 
         timestamp = self.start_time.isoformat()
