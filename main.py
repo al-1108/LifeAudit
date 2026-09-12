@@ -87,7 +87,13 @@ class ActivityCard(QWidget):
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(14)
 
-        time_label = QLabel(self.start.strftime("%I:%M %p"))
+        time_text = self.start.strftime("%I:%M %p")
+        if self.start.date() < day_start.date():
+            time_text += self.start.strftime("\n%b %d")
+            if self.start.year != day_start.year:
+                time_text += self.start.strftime("\n%Y")
+        time_label = QLabel(time_text)
+        time_label.setToolTip(self.start.strftime("%A, %B %d, %Y at %I:%M %p"))
         time_label.setObjectName("timelineTime")
         time_label.setFixedWidth(76)
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop)
