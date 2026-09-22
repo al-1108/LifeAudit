@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import tempfile
 from datetime import datetime, timedelta
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,10 +19,148 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QTabWidget,
     QProgressBar,
+    QDialog,
+    QDialogButtonBox,
+    QDateTimeEdit,
+    QMessageBox,
     QSizePolicy
 )
 from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
+
+
+def shared_boundaries(activities):
+    """Return adjacent pairs that already share an endpoint, including void."""
+    return [index for index in range(len(activities) - 1)
+            if activities[index]["end"] is not None
+            and datetime.fromisoformat(activities[index]["end"])
+            == datetime.fromisoformat(activities[index + 1]["start"])]
+
+
+def move_boundary(activities, index, timestamp, now):
+    """Move both sides of a transition without changing total coverage."""
+    if index not in shared_boundaries(activities):
+        raise ValueError("These activities do not share a timestamp.")
+    previous, following = activities[index:index + 2]
+    lower = datetime.fromisoformat(previous["start"])
+    upper = (datetime.fromisoformat(following["end"])
+             if following["end"] is not None else now)
+    if not lower < timestamp < upper or timestamp > now:
+        raise ValueError(
+            "Choose a time after the first activity started and before the second "
+            "activity ended (or now if it is running). Both need a positive duration."
+        )
+    updated = [dict(activity) for activity in activities]
+    updated[index]["end"] = updated[index + 1]["start"] = timestamp.isoformat()
+    return updated
+
+
+class EditTimesDialog(QDialog):
+    """Edit a shared boundary anywhere in the saved history."""
+
+    def __init__(self, activities, parent=None):
+        super().__init__(parent)
+        self.activities = activities
+        self.setWindowTitle("Edit activity times")
+        self.setMinimumWidth(520)
+        self.setStyleSheet("""
+            QDialog { background: #f5f9f8; }
+            QDateTimeEdit {
+                background: #ffffff; color: #243b38; border: 1px solid #d5e4e0;
+                border-radius: 4px; padding: 10px;
+            }
+        """)
+        layout = QVBoxLayout(self)
+        explanation = QLabel(
+            "Forgot to switch activities? Choose the transition and set when it "
+            "actually happened. The first activity's end and the next activity's "
+            "start change together, keeping every second accounted for."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        layout.addWidget(QLabel("Activity transition"))
+        self.pair_combo = CategoryComboBox()
+        # Use a dropdown list below the field instead of a native menu centered
+        # on the selected transition.
+        self.pair_style = QStyleFactory.create("Fusion")
+        self.pair_style.setParent(self.pair_combo)
+        self.pair_combo.setStyle(self.pair_style)
+        self.pair_combo.setView(QListView())
+        self.pair_combo.setStyleSheet("QComboBox { combobox-popup: 0; }")
+        self.pair_combo.setMaxVisibleItems(8)
+        self.pair_combo.setMinimumContentsLength(30)
+        self.pair_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        for index in shared_boundaries(activities):
+            previous, following = activities[index:index + 2]
+            boundary = datetime.fromisoformat(following["start"])
+            self.pair_combo.addItem(
+                f"{boundary:%b %d, %Y %H:%M:%S} · "
+                f"{self.activity_name(previous)} → {self.activity_name(following)}", index
+            )
+        layout.addWidget(self.pair_combo)
+        self.context_label = QLabel()
+        self.context_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.context_label.setWordWrap(True)
+        layout.addWidget(self.context_label)
+        layout.addWidget(QLabel("Shared end / start time (local time)"))
+        self.time_edit = QDateTimeEdit()
+        self.time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.time_edit.setButtonSymbols(QDateTimeEdit.ButtonSymbols.NoButtons)
+        layout.addWidget(self.time_edit)
+        self.error_label = QLabel()
+        self.error_label.setStyleSheet("color: #b33b32;")
+        self.error_label.setWordWrap(True)
+        layout.addWidget(self.error_label)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setStyleSheet("""
+            QPushButton { background: rgba(15, 126, 123, 20); color: #0c706e; }
+            QPushButton:hover { background: rgba(15, 126, 123, 35); }
+            QPushButton:pressed { background: rgba(15, 126, 123, 50); }
+        """)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        self.pair_combo.currentIndexChanged.connect(self.select_pair)
+        self.time_edit.dateTimeChanged.connect(lambda _: self.error_label.clear())
+        self.pair_combo.setCurrentIndex(self.pair_combo.count() - 1)
+        self.select_pair()
+
+    @staticmethod
+    def activity_name(activity):
+        return "Untracked time" if activity["category"] == "void" else activity["activity"]
+
+    def select_pair(self):
+        index = self.pair_combo.currentData()
+        if index is None:
+            self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(False)
+            return
+        previous, following = self.activities[index:index + 2]
+        self.original_time = datetime.fromisoformat(following["start"])
+        self.time_edit.setDateTime(self.original_time.replace(microsecond=0))
+        end = (datetime.fromisoformat(following["end"]).strftime("%Y-%m-%d %H:%M:%S")
+               if following["end"] else "still running")
+        start = datetime.fromisoformat(previous["start"])
+        self.context_label.setText(
+            f"{self.activity_name(previous)}: started {start:%Y-%m-%d %H:%M:%S}\n"
+            f"{self.activity_name(following)}: {('ends ' + end) if following['end'] else end}"
+        )
+        self.error_label.clear()
+
+    def accept(self):
+        timestamp = self.time_edit.dateTime().toPython()
+        # Opening and saving an unchanged second must preserve fractional precision.
+        if timestamp == self.original_time.replace(microsecond=0):
+            timestamp = self.original_time
+        try:
+            self.updated_activities = move_boundary(
+                self.activities, self.pair_combo.currentData(), timestamp, datetime.now()
+            )
+        except ValueError as error:
+            self.error_label.setText(str(error))
+            return
+        super().accept()
 
 
 class CategoryComboBox(QComboBox):
@@ -93,7 +232,7 @@ class ActivityCard(QWidget):
             if self.start.year != day_start.year:
                 time_text += self.start.strftime("\n%Y")
         time_label = QLabel(time_text)
-        time_label.setToolTip(self.start.strftime("%A, %B %d, %Y at %I:%M %p"))
+        time_label.setToolTip(self.start.strftime("%A, %B %d, %Y at %I:%M:%S %p"))
         time_label.setObjectName("timelineTime")
         time_label.setFixedWidth(76)
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop)
@@ -140,9 +279,9 @@ class ActivityCard(QWidget):
         # Only count the part of this activity inside the displayed day.
         start = max(self.start, self.day_start)
         end = min(self.end if self.end is not None else now, self.day_end)
-        minutes = max(0, int((end - start).total_seconds()) // 60)
+        minutes, seconds = divmod(max(0, int((end - start).total_seconds())), 60)
         hours, minutes = divmod(minutes, 60)
-        duration = f"{hours}h {minutes}m" if hours else f"{minutes}m"
+        duration = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
         running = " · currently doing" if self.end is None else ""
         self.details_label.setText(
             f"{self.activity['category']} · {duration}{running}"
@@ -393,6 +532,11 @@ class LifeAudit(QWidget):
         self.timeline_count = QLabel()
         self.timeline_count.setObjectName("timelineCount")
         timeline_header.addWidget(self.timeline_count)
+        self.edit_times_button = QPushButton("Edit times")
+        self.edit_times_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_times_button.setToolTip("Adjust the shared timestamp between two activities, including past days")
+        self.edit_times_button.clicked.connect(self.edit_times)
+        timeline_header.addWidget(self.edit_times_button)
         layout.addLayout(timeline_header, 1, 1)
 
         self.timeline_scroll = QScrollArea()
@@ -441,9 +585,10 @@ class LifeAudit(QWidget):
         self.previous_week_button.setAccessibleName("Previous week")
         self.previous_week_button.clicked.connect(lambda: self.change_summary_week(-1))
         header.addWidget(self.previous_week_button)
-        this_week = QPushButton("This week")
-        this_week.clicked.connect(lambda: self.change_summary_week(None))
-        header.addWidget(this_week)
+        self.this_week_button = QPushButton("This week")
+        self.this_week_button.setObjectName("thisWeekButton")
+        self.this_week_button.clicked.connect(lambda: self.change_summary_week(None))
+        header.addWidget(self.this_week_button)
         self.next_week_button = QPushButton("→")
         self.next_week_button.setAccessibleName("Next week")
         self.next_week_button.clicked.connect(lambda: self.change_summary_week(1))
@@ -527,6 +672,7 @@ class LifeAudit(QWidget):
             f"{week_start:%b %d, %Y} – {last_day:%b %d, %Y} · Sunday–Saturday"
         )
         self.next_week_button.setEnabled(self.summary_week_offset < 0)
+        self.this_week_button.setEnabled(self.summary_week_offset != 0)
         self.previous_week_button.setEnabled(self.summary_week_offset > earliest_offset)
 
         days = [0.0] * 7
@@ -682,6 +828,42 @@ class LifeAudit(QWidget):
         self.load_weekly_summary()
         self.update_time()
 
+    def edit_times(self):
+        path = "data/activities.json"
+        try:
+            with open(path, "r") as file:
+                activities = json.load(file)
+            if not shared_boundaries(activities):
+                return
+            dialog = EditTimesDialog(activities, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            with open(path, "r") as file:
+                if json.load(file) != activities:
+                    QMessageBox.warning(self, "Activities changed",
+                                        "Activities changed while editing. Reopen Edit times and try again.")
+                    return
+            # Replace the whole file only after both endpoints are safely written.
+            temporary_path = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", dir="data", delete=False) as file:
+                    temporary_path = file.name
+                    json.dump(dialog.updated_activities, file, indent=4)
+                os.replace(temporary_path, path)
+            finally:
+                if temporary_path and os.path.exists(temporary_path):
+                    os.unlink(temporary_path)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Could not save times", str(error))
+            return
+
+        current = dialog.updated_activities[-1]
+        self.start_time = (datetime.fromisoformat(current["start"])
+                           if current["end"] is None and current["category"] != "void" else None)
+        self.load_timeline()
+        self.load_weekly_summary()
+        self.update_time()
+
     def load_timeline(self):
         now = datetime.now()
         self.timeline_date = now.date()
@@ -703,6 +885,7 @@ class LifeAudit(QWidget):
             with open("data/activities.json", "r") as f:
                 activities = json.load(f)
 
+        self.edit_times_button.setEnabled(bool(shared_boundaries(activities)))
         today_activities = []
         for activity in activities:
             if activity["category"] == "void":
@@ -754,7 +937,7 @@ class LifeAudit(QWidget):
 
         if self.start_time:
             self.status_badge.setText("●  In progress")
-            self.start_label.setText(f"Started at {self.start_time.strftime('%I:%M %p')} · elapsed time")
+            self.start_label.setText(f"Started at {self.start_time.strftime('%I:%M:%S %p')} · elapsed time")
 
             elapsed = now - self.start_time
 
