@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QWidget,
     QVBoxLayout,
+    QLayout,
     QHBoxLayout,
     QGridLayout,
     QFrame,
@@ -71,6 +72,7 @@ class EditTimesDialog(QDialog):
             }
         """)
         layout = QVBoxLayout(self)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
         explanation = QLabel(
             "Forgot to switch activities? Choose the transition and set when it "
             "actually happened. The first activity's end and the next activity's "
@@ -345,8 +347,7 @@ class LifeAudit(QWidget):
             elif data:
                 self.task_label.setText("Tracking paused")
         
-        self.resize(1040, 600)
-        self.setMinimumSize(900, 560)
+        self.setFixedSize(1040, 600)
         self.setObjectName("LifeAudit")
         self.setStyleSheet("""
             QWidget { color: #243b38; font-size: 13px; }
