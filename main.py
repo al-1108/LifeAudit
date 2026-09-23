@@ -431,7 +431,7 @@ class LifeAudit(QWidget):
 
         title = QLabel("LifeAudit")
         title.setObjectName("brand")
-        subtitle = QLabel("accountability engine, no minute left untracked")
+        subtitle = QLabel("for accountability ")
         subtitle.setObjectName("subtitle")
         layout.addWidget(title, 0, 0)
         layout.addWidget(subtitle, 1, 0, Qt.AlignmentFlag.AlignVCenter)
