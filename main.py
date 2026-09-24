@@ -347,7 +347,7 @@ class LifeAudit(QWidget):
             elif data:
                 self.task_label.setText("Tracking paused")
         
-        self.setFixedSize(1040, 600)
+        self.setFixedSize(1040, 655)
         self.setObjectName("LifeAudit")
         self.setStyleSheet("""
             QWidget { color: #243b38; font-size: 13px; }
